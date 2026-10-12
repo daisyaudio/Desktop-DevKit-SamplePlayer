@@ -11,9 +11,9 @@
                 "${workspaceRoot}"
             ],
             // Here's where you can put the path to the program you want to debug:
-            "executable": "${workspaceRoot}/Blink/build/Blink.elf",
+            "executable": "${workspaceRoot}/SamplePlayer/build/SamplePlayer.elf",
             "interface": "swd",
-            "name": "Debug Blink",
+            "name": "Debug Sample Player",
             "openOCDLaunchCommands": [
                 "init",
                 "reset init",
@@ -36,7 +36,7 @@
             "name": "Debug (J-Link)",
             "cwd": "${workspaceRoot}",
             "device": "STM32H750IB",
-            "executable": "${workspaceRoot}/Blink/build/Blink.elf",
+            "executable": "${workspaceRoot}/SamplePlayer/build/SamplePlayer.elf",
             "interface": "swd",
             "osx": {
                 "armToolchainPath": "/Applications/ArmGNUToolchain/12.3.rel1/arm-none-eabi/bin",

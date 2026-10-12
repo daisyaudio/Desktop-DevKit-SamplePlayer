@@ -13,7 +13,7 @@
             "label": "Build",
             "command": "make",
             "options": {
-                "cwd": "${workspaceFolder}/Blink"
+                "cwd": "${workspaceFolder}/SamplePlayer"
             },
             "problemMatcher": [],
             "group": {
@@ -26,7 +26,7 @@
             "label": "Clean",
             "command": "make clean",
             "options": {
-                "cwd": "${workspaceFolder}/Blink"
+                "cwd": "${workspaceFolder}/SamplePlayer"
             },
             "problemMatcher": [],
             "type": "shell"
@@ -35,7 +35,7 @@
             "label": "Program DFU",
             "command": "make program-dfu",
             "options": {
-                "cwd": "${workspaceFolder}/Blink"
+                "cwd": "${workspaceFolder}/SamplePlayer"
             },
             "problemMatcher": [],
             "type": "shell"
@@ -44,7 +44,7 @@
             "label": "Rebuild and Program DFU",
             "command": "make clean; make; make program-dfu",
             "options": {
-                "cwd": "${workspaceFolder}/Blink"
+                "cwd": "${workspaceFolder}/SamplePlayer"
             },
             "problemMatcher": [],
             "type": "shell"
