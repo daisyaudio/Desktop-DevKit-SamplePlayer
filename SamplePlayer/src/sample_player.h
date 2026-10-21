@@ -2,6 +2,8 @@
 #include <cstdlib>
 #include "daisy.h"
 #include "daisysp.h"
+#include "distortion_effect.h"
+#include "filter_effect.h"
 
 /** maximum number of steps in a sequence */
 constexpr size_t kMaxSequenceSteps = 8;
@@ -23,6 +25,9 @@ struct SamplePlayer {
     */
     inline void Init() { ReloadFiles(); }
 
+    /** Search the root-directory of the attached SD Card, and load up to 8 WAV files.
+     *  Report which files were loaded, in order, into "samples-loaded.txt"
+     */
     inline void ReloadFiles() {
         file_table.Fill("/", ".wav");
         file_table.WriteLog("samples-loaded.txt");
@@ -39,6 +44,8 @@ struct SamplePlayer {
         }
     }
 
+    inline void Stop(size_t index) { voice[index].SetPlaying(false); }
+
     daisy::WavPlayer<kTransferWorkspacePerVoice> voice[kMaxVoices];
     daisy::FileTable<kMaxVoices>                 file_table;
 
@@ -46,6 +53,7 @@ struct SamplePlayer {
     using PlayerResult = daisy::WavPlayer<kTransferWorkspacePerVoice>::Result;
 };
 
+/** Returns a human-readable string for each error message. */
 const char* PlayerResultToStr(SamplePlayer::PlayerResult& res) {
     switch(res) {
         case SamplePlayer::PlayerResult::Ok: return "Ok";
@@ -72,6 +80,10 @@ struct SampleSequencer {
         Random,
     };
 
+    /** Initialize the sequencer.
+     *
+     *  This opens all files for streaming, seeds the random playback direction, and initializes the internal clock and performance effects.
+     */
     void Init(float sample_rate) {
         // Seed random (used for oplayback direction)
         // could replace with any of the cpp <random> generators
@@ -79,17 +91,46 @@ struct SampleSequencer {
         // the sequence being identical every time.
         daisy::Random::Init();
         std::srand(daisy::Random::GetValue());
-        player.Init();
+
+        /** Initialize the 8-voice sample player */
+        // player.Init();
 
         internal_clock.Init(2.f, sample_rate);
+        direction = PlaybackDirection::Forward;
+        play = prev_play = false;
+        step             = 0;
+
+        hold      = false;
+        held_step = step;
+
+        /** Maybe pre-load a pattern instead of being all-off */
+        for(size_t i = 0; i < kMaxVoices; i++) {
+            for(size_t j = 0; j < kMaxSequenceSteps; j++) {
+                step_enabled[i][j] = false;
+            }
+        }
+
+        for(size_t chn = 0; chn < 2; chn++) {
+            distortion[chn].Init();
+            distortion[chn].SetDrive(0.0);
+            filter[chn].Init(sample_rate);
+            filter[chn].SetCutoffParam(0.5f);
+            decim[chn].Init();
+            decim[chn].SetSmoothCrushing(true);
+        }
     }
 
+    /** Enable the specified step regardless of current state */
     inline void EnableStep(size_t voice, size_t pos) {
         step_enabled[voice][pos] = true;
     }
+
+    /** Disable the specified step regardless of current state */
     inline void DisableStep(size_t voice, size_t pos) {
         step_enabled[voice][pos] = false;
     }
+
+    /** Toggle the state of the specified step */
     inline void ToggleStep(size_t voice, size_t pos) {
         if(step_enabled[voice][pos]) {
             DisableStep(voice, pos);
@@ -98,10 +139,40 @@ struct SampleSequencer {
         }
     }
 
+    /** Stops any ongoing playback of a specific voice */
+    inline void StopVoice(size_t voice) { player.Stop(voice); }
+
+    /** Returns true if the hold feature is enabled */
+    inline bool GetHold() const { return hold; }
+
+    /** Sets the state of the hold feature.
+     *  When true, the sequence will not advance, but will repeat the current step
+     */
+    inline void SetHold(const bool state) {
+        bool update_held = state && !hold;
+        hold             = state;
+        if(update_held) {
+            held_step = step;
+        }
+    }
+
+    /** Toggle the state of the hold feature.
+     *  When true, the sequence will not advance, but will repeat the current step
+     */
+    inline void ToggleHold() {
+        if(GetHold())
+            SetHold(false);
+        else
+            SetHold(true);
+    }
+
+
+    /** Return whether the step for the specified voice is enabled */
     inline bool GetStepEnabled(size_t voice, size_t pos) const {
         return step_enabled[voice][pos];
     }
 
+    /** Increment the current step of the sequence according to the current playback direction. */
     void Advance() {
         switch(direction) {
             case PlaybackDirection::Forward:
@@ -120,8 +191,17 @@ struct SampleSequencer {
         }
     }
 
+    /** Return the current step of the sequencer */
     inline size_t GetCurrentStep() const { return step; }
 
+    /** Process the sequencer data, incrementing the step position, and triggering sample voices for active steps.
+     *  Audio for up to 8 simultaneous samples are streamed from disk, and summed together.
+     *  The sum of all audio are then run through a few performance effects.
+     *
+     *  @return a sample player result corresponding to the last non-OK status that occurred during the block of audio
+     *  This is frequently underruns for a few milliseconds when samples are triggered (due to the latency of the disk).
+     *  This could be improved.
+     */
     inline SamplePlayer::PlayerResult
     Process(daisy::AudioHandle::OutputBuffer out, size_t size) {
         auto result = SamplePlayer::PlayerResult::Ok;
@@ -132,11 +212,13 @@ struct SampleSequencer {
 
         for(size_t i = 0; i < size; i++) {
             if(internal_clock.Process() && play) {
-                // Advance
+                // Update sequence position
                 Advance();
+                // Use the held step if hold is active, otherwise keep playing
+                auto step_to_trig = hold ? held_step : step;
                 // Fire samples
                 for(size_t v = 0; v < kMaxVoices; v++) {
-                    if(step_enabled[v][step]) {
+                    if(step_enabled[v][step_to_trig]) {
                         player.Trigger(v);
                     }
                 }
@@ -145,10 +227,9 @@ struct SampleSequencer {
             for(auto& v : player.voice) {
                 float tout[2] = {0.f};
 
-                auto _res = v.Stream(tout, 2);
-                // pass results back to the user to indicate underruns/etc.?
-                if(_res != SamplePlayer::PlayerResult::Ok) {
-                    result = _res;
+                auto stream_res = v.Stream(tout, 2);
+                if(stream_res != SamplePlayer::PlayerResult::Ok) {
+                    result = stream_res;
                 }
 
                 // Sum successive voices and hard-clip the result
@@ -162,12 +243,25 @@ struct SampleSequencer {
                         = daisysp::fclamp(out_sum[1] + tout[1], -1.f, 1.f);
                 }
             }
-            out[0][i] = out_sum[0];
-            out[1][i] = out_sum[1];
+            /**
+             *  BitCrush->Bidirectional Filter->Distortion->Output
+             */
+            auto crush_l = decim[0].Process(out_sum[0]);
+            auto crush_r = decim[1].Process(out_sum[1]);
+            auto filt_l  = filter[0].Process(crush_l);
+            auto filt_r  = filter[1].Process(crush_r);
+            auto dist_l  = distortion[0].Process(filt_l);
+            auto dist_r  = distortion[1].Process(filt_r);
+            out[0][i]    = dist_l;
+            out[1][i]    = dist_r;
         }
         return result;
     }
 
+    /** Acquires new samples for the sample player voices to stream.
+     *  This should be run in the main while() loop or some other interruptable
+     *  location.
+     */
     inline SamplePlayer::PlayerResult Prepare() {
         auto result = SamplePlayer::PlayerResult::Ok;
         for(auto& v : player.voice) {
@@ -179,21 +273,51 @@ struct SampleSequencer {
         return result;
     }
 
-    inline void SetAmplitude(size_t voice, float amp) {
-        amplitude[voice] = amp;
+    /** Sets the filter effect parameter.
+     *
+     *  Values between 0.0 and 0.49 act as a resonant low-pass
+     *  Values between 0.51 and 1.0 act as a resonant high-pass
+     *  Values within +/- 0.01 of 0.5 will result in the filter being disabled.
+     */
+    void SetFilter(const float in) {
+        // TODO: set filt freqs and/crossfade values
+        filter[0].SetCutoffParam(in);
+        filter[1].SetCutoffParam(in);
     }
+
+    /** Adds gain/distortion to the final output of the signal chain */
+    void SetDistortionAmount(const float amt) {
+        distortion[0].SetDrive(amt);
+        distortion[1].SetDrive(amt);
+    }
+
+    void SetBitcrushAmount(const float amt) {
+        auto factor = amt * 0.7f;
+        auto crush  = amt * 0.3f;
+        decim[0].SetDownsampleFactor(factor);
+        decim[0].SetBitcrushFactor(crush);
+        decim[1].SetDownsampleFactor(factor);
+        decim[1].SetBitcrushFactor(crush);
+    }
+
 
     PlaybackDirection direction;
     bool              play;
     bool              step_enabled[kMaxVoices][kMaxSequenceSteps];
     size_t            step;
-    float             amplitude[kMaxVoices];
 
     SamplePlayer   player;
     daisysp::Metro internal_clock;
     bool           prev_play; //< used to track state transitions
-};
 
-struct SampleManager {
-    // stuff
+    /** if true, repeat the same step until the setting is disabled.
+     *  The sequence keeps in the background to stay more musical.
+     */
+    bool   hold;
+    size_t held_step;
+
+    // Performance Effects
+    DistortionEffect   distortion[2];
+    FilterEffect       filter[2];
+    daisysp::Decimator decim[2];
 };

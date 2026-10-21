@@ -13,6 +13,7 @@ class MainPage : public daisy::UiPage {
 
     void Init(AppData *data) { data_ = data; }
 
+    /** Update LEDs to show the state of the sequencer. */
     void Draw(const daisy::UiCanvasDescriptor &canvasDescriptor) override {
         auto *hw = reinterpret_cast<daisy::desktop_devkit::Hardware *>(
             canvasDescriptor.handle_);
@@ -39,7 +40,7 @@ class MainPage : public daisy::UiPage {
                   bool     isRetriggering) override {
         switch(numberOfPresses) {
             case 0:
-                // Log::PrintLine("Released %d", buttonID + 1);
+                // On release:
                 if(buttonID < 8) {
                     // Select voice
                     data_->selected_voice = buttonID;
@@ -49,10 +50,15 @@ class MainPage : public daisy::UiPage {
                 }
                 break;
             case 1:
+                // On Press:
                 //Log::PrintLine("Pressed %d", buttonID + 1);
                 break;
             case 2:
-                //Log::PrintLine("Long Pressed %d", buttonID + 1);
+                // Long Press:
+                // Top Row: stop playback of any ongoing playback of this voice
+                if(buttonID < 8) {
+                    data_->sequencer->StopVoice(buttonID);
+                }
                 break;
             default: break;
         }
@@ -66,12 +72,38 @@ class MainPage : public daisy::UiPage {
         valueStr.Append(": ");
         valueStr.AppendFloat(newPosition, 3);
         Log::PrintLine(valueStr.Cstr());
+
+        // Do things with the knobs:
         switch(potID) {
             case 0: {
+                // Knob 1: Tempo
                 auto new_freq = (0.5f + (newPosition * newPosition * 16.f));
                 data_->sequencer->internal_clock.SetFreq(new_freq);
                 break;
             }
+            case 1: {
+                // Knob 2: Step repeat
+                data_->sequencer->SetHold(newPosition > 0.5f);
+            } break;
+            case 2: {
+                // Knob 3: Filter Effect
+                data_->sequencer->SetFilter(newPosition);
+            } break;
+            case 3: {
+                // Knob 4: Distortion Effect
+                data_->sequencer->SetDistortionAmount(newPosition);
+            } break;
+            case 4: {
+                // Knob 5: Bitcrush Effect
+                data_->sequencer->SetBitcrushAmount(newPosition);
+            } break;
+            case 5: {
+                // Knob 6: Reverb Time
+            } break;
+            case 6: {
+                // Knob 7: Reverb Amount
+            } break;
+            // Knobs 7 & 8: Add more knob features here :)
             default: break;
         }
         return false;

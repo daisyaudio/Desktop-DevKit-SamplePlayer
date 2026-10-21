@@ -5,7 +5,7 @@
             // Edit to match your development environment if necessary
             "compilerPath": "C:/Program Files/DaisyToolchain/bin/arm-none-eabi-gcc.exe",
             "includePath": [
-                "${workspaceFolder}/Blink/**",
+                "${workspaceFolder}/SamplePlayer/src/",
                 "${workspaceFolder}/libs/libDaisy",
                 "${workspaceFolder}/libs/libDaisy/src",
                 "${workspaceFolder}/libs/libDaisy/src/sys",
@@ -57,7 +57,7 @@
             // Edit to match your development environment if necessary
             "compilerPath": "/Applications/ARM/bin/arm-none-eabi-g++",
             "includePath": [
-                "${workspaceFolder}/Blink/**",
+                "${workspaceFolder}/SamplePlayer/src/",
                 "${workspaceFolder}/libs/libDaisy",
                 "${workspaceFolder}/libs/libDaisy/src",
                 "${workspaceFolder}/libs/libDaisy/src/sys",

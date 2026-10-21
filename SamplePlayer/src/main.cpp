@@ -24,11 +24,16 @@
 using namespace daisy;
 using namespace daisy::desktop_devkit;
 
+// Global objects
+
 Hardware        hw;
 Ui              ui;
 SampleSequencer sample_seq;
 SdmmcHandler    sdmmc;
 FatFSInterface  fsi;
+
+/** Flags to trigger mounting/unmounting the SD card */
+static bool sd_unmount_flag, sd_remount_flag;
 
 /** FIFO of strings that we can use to move messages from the Audio callback
  * to be printed in the main while() loop.
@@ -40,6 +45,16 @@ void AudioCallback(AudioHandle::InputBuffer  in,
                    size_t                    size) {
     hw.UpdateAllControls();
     ui.GenerateEvents();
+
+    // Trigger unmount/remount of SD card based on its removal/insertion
+    if(hw.sd_detect.FallingEdge()) {
+        sd_unmount_flag = true;
+    } else if(hw.sd_detect.RisingEdge()) {
+        sd_remount_flag = true;
+    }
+
+    // These could be handled in the UI, but for simplicity sake, the UI is
+    // only generating events for the 16 buttons, and 8 pots.
     sample_seq.play = hw.tog_sw17.Pressed();
     switch(hw.tog_sw18.Read()) {
         case Switch3::POS_UP:
@@ -53,13 +68,21 @@ void AudioCallback(AudioHandle::InputBuffer  in,
             break;
         default: break;
     }
+
+    // Run the sequencer, filling the output buffer with samples.
     auto res = sample_seq.Process(out, size);
-    if(res != SamplePlayer::PlayerResult::Ok
-       && res != SamplePlayer::PlayerResult::NewSamplesRequested) {
-        FixedCapStr<64> err("Playback err: ");
-        err.Append(PlayerResultToStr(res));
-        msg_fifo.PushBack(err);
-    }
+    (void)(res); //< temporarily unused
+
+    // Report any unexpected results to be printed from the main loop
+    // TODO: filter out the trigger latency underruns (a few ms of underrun
+    // before new samples arrive)
+    // if(res != SamplePlayer::PlayerResult::Ok
+    //    && res != SamplePlayer::PlayerResult::NewSamplesRequested
+    //    && res != SamplePlayer::PlayerResult::FileNotFoundError) {
+    //     FixedCapStr<64> err("Playback err: ");
+    //     err.Append(PlayerResultToStr(res));
+    //     msg_fifo.PushBack(err);
+    // }
 }
 
 
@@ -85,11 +108,15 @@ int main(void) {
     /** SD Card / FatFS Interface Init */
     SdmmcHandler::Config sdcfg;
     sdcfg.Defaults();
-    sdcfg.speed = SdmmcHandler::Speed::VERY_FAST;
+    sdcfg.speed = SdmmcHandler::Speed::FAST;
     sdcfg.width = SdmmcHandler::BusWidth::BITS_4;
     sdmmc.Init(sdcfg);
-    fsi.Init(FatFSInterface::Config::Media::MEDIA_SD);
-    f_mount(&fsi.GetSDFileSystem(), "/", 1);
+
+    // We could do this here, and then either get the initial
+    // "remount" flag to clear itself, or we could just let it
+    // do its thing.
+    // fsi.Init(FatFSInterface::Config::Media::MEDIA_SD);
+    // f_mount(&fsi.GetSDFileSystem(), "/", 1);
 
     sample_seq.Init(hw.seed.AudioSampleRate());
     AppData app_data = {&sample_seq, 0};
@@ -104,6 +131,31 @@ int main(void) {
     while(true) {
         // auto now = System::GetNow();
 
+        // Handle SD Card un/remounting:
+        if(sd_unmount_flag) {
+            // unmount and delink filesystem from hardware
+            Logger<LOGGER_EXTERNAL>::PrintLine("Unmounting SD Card.");
+            f_mount(nullptr, "/", 0);
+            fsi.DeInit();
+            // clear the flag when we're done.
+            Logger<LOGGER_EXTERNAL>::PrintLine("unmount finished.");
+            sd_unmount_flag = false;
+        }
+        if(sd_remount_flag) {
+            Logger<LOGGER_EXTERNAL>::PrintLine("Remounting SD Card.");
+            // Reset SDMMC peripheral and relink FatFS
+            sdmmc.Reset();
+            fsi.Init(FatFSInterface::Config::Media::MEDIA_SD);
+            f_mount(&fsi.GetSDFileSystem(), "/", 1);
+
+            // Reload files
+            sample_seq.player.ReloadFiles();
+
+            // clear the flag when we're done.
+            Logger<LOGGER_EXTERNAL>::PrintLine("remount finished.");
+            sd_remount_flag = false;
+        }
+
         auto res = sample_seq.Prepare();
         if(res != SamplePlayer::PlayerResult::Ok
            && res != SamplePlayer::PlayerResult::NewSamplesRequested) {
@@ -112,29 +164,29 @@ int main(void) {
             Logger<LOGGER_EXTERNAL>::PrintLine(err.Cstr());
         }
 
-        while(!msg_fifo.IsEmpty()) {
-            auto msg = msg_fifo.PopFront();
-            Logger<LOGGER_EXTERNAL>::PrintLine(msg.Cstr());
-        }
+        // while(!msg_fifo.IsEmpty()) {
+        //     auto msg = msg_fifo.PopFront();
+        //     Logger<LOGGER_EXTERNAL>::PrintLine(msg.Cstr());
+        // }
 
         /** Handle MIDI events */
-        while(hw.midi.HasEvents()) {
-            auto msg = hw.midi.PopEvent();
-            switch(msg.type) {
-                case NoteOn:
-                    // Echo note on messages to the MIDI out
-                    {
-                        uint8_t bytes[3] = {0x90, 0x00, 0x00};
-                        bytes[1]         = msg.data[0];
-                        bytes[2]         = msg.data[1];
-                        hw.midi.SendMessage(bytes, 3);
-                    }
-                    break;
-                default: break;
-            }
-        }
+        // while(hw.midi.HasEvents()) {
+        //     auto msg = hw.midi.PopEvent();
+        //     switch(msg.type) {
+        //         case NoteOn:
+        //             // Echo note on messages to the MIDI out
+        //             {
+        //                 uint8_t bytes[3] = {0x90, 0x00, 0x00};
+        //                 bytes[1]         = msg.data[0];
+        //                 bytes[2]         = msg.data[1];
+        //                 hw.midi.SendMessage(bytes, 3);
+        //             }
+        //             break;
+        //         default: break;
+        //     }
+        // }
 
-        System::Delay(1);
+        // System::Delay(1);
     }
 
     return 0;
