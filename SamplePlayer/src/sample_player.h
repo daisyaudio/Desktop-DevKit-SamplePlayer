@@ -33,16 +33,14 @@ struct SamplePlayer {
         file_table.WriteLog("samples-loaded.txt");
         for(size_t i = 0; i < file_table.GetNumFiles(); i++) {
             voice[i].Init(file_table.GetFileName(i));
+            // If files were playing back already, this can prevent
+            // overruns when loading new files, etc.
+            voice[i].Restart();
+            voice[i].SetPlaying(false);
         }
     }
 
-    inline void Trigger(size_t index) {
-        if(voice[index].GetPlaying()) {
-            voice[index].Restart();
-        } else {
-            voice[index].SetPlaying(true);
-        }
-    }
+    inline void Trigger(size_t index) { voice[index].Restart(); }
 
     inline void Stop(size_t index) { voice[index].SetPlaying(false); }
 
@@ -86,14 +84,11 @@ struct SampleSequencer {
      */
     void Init(float sample_rate) {
         // Seed random (used for oplayback direction)
-        // could replace with any of the cpp <random> generators
-        // we use the Daisy's TRNG peripheral as a seed to avoid
+        // could replace with any of the cpp <random> generators.
+        // We use the Daisy's TRNG peripheral as a seed to avoid
         // the sequence being identical every time.
         daisy::Random::Init();
         std::srand(daisy::Random::GetValue());
-
-        /** Initialize the 8-voice sample player */
-        // player.Init();
 
         internal_clock.Init(2.f, sample_rate);
         direction = PlaybackDirection::Forward;
@@ -103,13 +98,16 @@ struct SampleSequencer {
         hold      = false;
         held_step = step;
 
-        /** Maybe pre-load a pattern instead of being all-off */
+        // We don't load files right now because the SD card may not be present yet.
+
+        /** Initialize all steps to off by default */
         for(size_t i = 0; i < kMaxVoices; i++) {
             for(size_t j = 0; j < kMaxSequenceSteps; j++) {
                 step_enabled[i][j] = false;
             }
         }
 
+        /** Initialize the effects */
         for(size_t chn = 0; chn < 2; chn++) {
             distortion[chn].Init();
             distortion[chn].SetDrive(0.0);
@@ -119,6 +117,8 @@ struct SampleSequencer {
             decim[chn].SetSmoothCrushing(true);
         }
     }
+
+    inline void ReloadFiles() { player.ReloadFiles(); }
 
     /** Enable the specified step regardless of current state */
     inline void EnableStep(size_t voice, size_t pos) {

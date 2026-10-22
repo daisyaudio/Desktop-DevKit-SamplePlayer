@@ -24,6 +24,8 @@
 using namespace daisy;
 using namespace daisy::desktop_devkit;
 
+using Log = Logger<LOGGER_EXTERNAL>;
+
 // Global objects
 
 Hardware        hw;
@@ -33,7 +35,10 @@ SdmmcHandler    sdmmc;
 FatFSInterface  fsi;
 
 /** Flags to trigger mounting/unmounting the SD card */
-static bool sd_unmount_flag, sd_remount_flag;
+static bool     sd_unmount_flag, sd_remount_flag;
+static uint32_t sd_remount_retries = 0;
+
+CpuLoadMeter cpu_meter_dsp;
 
 /** FIFO of strings that we can use to move messages from the Audio callback
  * to be printed in the main while() loop.
@@ -43,14 +48,18 @@ FIFO<FixedCapStr<64>, 16> msg_fifo;
 void AudioCallback(AudioHandle::InputBuffer  in,
                    AudioHandle::OutputBuffer out,
                    size_t                    size) {
+    cpu_meter_dsp.OnBlockStart();
     hw.UpdateAllControls();
     ui.GenerateEvents();
 
     // Trigger unmount/remount of SD card based on its removal/insertion
     if(hw.sd_detect.FallingEdge()) {
         sd_unmount_flag = true;
+        // If we're still retrying, stop.
+        sd_remount_flag = false;
     } else if(hw.sd_detect.RisingEdge()) {
-        sd_remount_flag = true;
+        sd_remount_flag    = true;
+        sd_remount_retries = 0;
     }
 
     // These could be handled in the UI, but for simplicity sake, the UI is
@@ -83,6 +92,7 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     //     err.Append(PlayerResultToStr(res));
     //     msg_fifo.PushBack(err);
     // }
+    cpu_meter_dsp.OnBlockEnd();
 }
 
 
@@ -103,20 +113,16 @@ void LowPriorityCallback(void *data) {
 int main(void) {
     hw.Init();
     System::Delay(50);
-    Logger<LOGGER_EXTERNAL>::StartLog(false);
+    Log::StartLog(false);
 
     /** SD Card / FatFS Interface Init */
     SdmmcHandler::Config sdcfg;
     sdcfg.Defaults();
-    sdcfg.speed = SdmmcHandler::Speed::FAST;
+    sdcfg.speed = SdmmcHandler::Speed::VERY_FAST;
     sdcfg.width = SdmmcHandler::BusWidth::BITS_4;
     sdmmc.Init(sdcfg);
 
-    // We could do this here, and then either get the initial
-    // "remount" flag to clear itself, or we could just let it
-    // do its thing.
-    // fsi.Init(FatFSInterface::Config::Media::MEDIA_SD);
-    // f_mount(&fsi.GetSDFileSystem(), "/", 1);
+    cpu_meter_dsp.Init(hw.seed.AudioSampleRate(), hw.seed.AudioBlockSize());
 
     sample_seq.Init(hw.seed.AudioSampleRate());
     AppData app_data = {&sample_seq, 0};
@@ -125,48 +131,75 @@ int main(void) {
     hw.StartLowPriorityCallback(LowPriorityCallback, 250);
     hw.seed.StartAudio(AudioCallback);
 
-    // auto     last_dac_write = System::GetNow();
-    // uint16_t dac_value      = 0;
+    uint32_t cpu_load_print_time = System::GetNow();
 
     while(true) {
-        // auto now = System::GetNow();
+        auto now = System::GetNow();
 
-        // Handle SD Card un/remounting:
+        // Handle SD Card unmounting after removal is detected:
         if(sd_unmount_flag) {
             // unmount and delink filesystem from hardware
-            Logger<LOGGER_EXTERNAL>::PrintLine("Unmounting SD Card.");
+            Log::PrintLine("Unmounting SD Card.");
             f_mount(nullptr, "/", 0);
             fsi.DeInit();
-            // clear the flag when we're done.
-            Logger<LOGGER_EXTERNAL>::PrintLine("unmount finished.");
+            // clear the flag when we're done (i'm fairly certain this cannot fail)..
+            Log::PrintLine("unmount finished.");
             sd_unmount_flag = false;
         }
+
+        // Remount SD Card after it is inserted.
         if(sd_remount_flag) {
-            Logger<LOGGER_EXTERNAL>::PrintLine("Remounting SD Card.");
-            // Reset SDMMC peripheral and relink FatFS
+            if(sd_remount_retries > 0) {
+                Log::PrintLine("\tretrying...attempt: %d", sd_remount_retries);
+                System::Delay(50);
+            } else {
+                Log::PrintLine("Remounting SD Card.");
+            }
+            // Perform entire de-init/re-init sequence
+            f_mount(nullptr, "/", 0);
+            fsi.DeInit();
             sdmmc.Reset();
             fsi.Init(FatFSInterface::Config::Media::MEDIA_SD);
-            f_mount(&fsi.GetSDFileSystem(), "/", 1);
 
-            // Reload files
-            sample_seq.player.ReloadFiles();
+            if(f_mount(&fsi.GetSDFileSystem(), "/", 1) != FR_OK) {
+                Log::PrintLine("\tremount failed...");
+                sd_remount_retries++;
+                if(sd_remount_retries > 10) {
+                    Log::PrintLine(
+                        "\tmax retries exceeded.. remove and reinsert card to "
+                        "re-attempt.");
+                    sd_remount_flag = false;
+                }
+            } else {
+                // Reload files
+                sample_seq.ReloadFiles();
 
-            // clear the flag when we're done.
-            Logger<LOGGER_EXTERNAL>::PrintLine("remount finished.");
-            sd_remount_flag = false;
+                // clear the flag when we're done.
+                Log::PrintLine("\tremount succeeded.");
+                sd_remount_flag = false;
+            }
         }
 
+        // Acquire new samples from the SD card to feed the audio
         auto res = sample_seq.Prepare();
         if(res != SamplePlayer::PlayerResult::Ok
            && res != SamplePlayer::PlayerResult::NewSamplesRequested) {
             FixedCapStr<64> err("Playback err: ");
             err.Append(PlayerResultToStr(res));
-            Logger<LOGGER_EXTERNAL>::PrintLine(err.Cstr());
+            Log::PrintLine(err.Cstr());
+        }
+
+        // Print if the DSP usage gets too high
+        if(cpu_meter_dsp.GetAvgCpuLoad() > 0.89f
+           && now - cpu_load_print_time > 500) {
+            Log::PrintLine("High CPU usage: %d%",
+                           (int)(cpu_meter_dsp.GetAvgCpuLoad() * 100.f));
+            cpu_load_print_time = now;
         }
 
         // while(!msg_fifo.IsEmpty()) {
         //     auto msg = msg_fifo.PopFront();
-        //     Logger<LOGGER_EXTERNAL>::PrintLine(msg.Cstr());
+        //     Log::PrintLine(msg.Cstr());
         // }
 
         /** Handle MIDI events */
