@@ -83,15 +83,14 @@ void AudioCallback(AudioHandle::InputBuffer  in,
     (void)(res); //< temporarily unused
 
     // Report any unexpected results to be printed from the main loop
-    // TODO: filter out the trigger latency underruns (a few ms of underrun
-    // before new samples arrive)
-    // if(res != SamplePlayer::PlayerResult::Ok
-    //    && res != SamplePlayer::PlayerResult::NewSamplesRequested
-    //    && res != SamplePlayer::PlayerResult::FileNotFoundError) {
-    //     FixedCapStr<64> err("Playback err: ");
-    //     err.Append(PlayerResultToStr(res));
-    //     msg_fifo.PushBack(err);
-    // }
+    if(res != SamplePlayer::PlayerResult::Ok
+       && res != SamplePlayer::PlayerResult::NewSamplesRequested
+       && res != SamplePlayer::PlayerResult::InitialLatency
+       && res != SamplePlayer::PlayerResult::FileNotFoundError) {
+        FixedCapStr<64> err("Playback err: ");
+        err.Append(PlayerResultToStr(res));
+        msg_fifo.PushBack(err);
+    }
     cpu_meter_dsp.OnBlockEnd();
 }
 
@@ -118,7 +117,7 @@ int main(void) {
     /** SD Card / FatFS Interface Init */
     SdmmcHandler::Config sdcfg;
     sdcfg.Defaults();
-    sdcfg.speed = SdmmcHandler::Speed::VERY_FAST;
+    sdcfg.speed = SdmmcHandler::Speed::STANDARD;
     sdcfg.width = SdmmcHandler::BusWidth::BITS_4;
     sdmmc.Init(sdcfg);
 
@@ -197,10 +196,10 @@ int main(void) {
             cpu_load_print_time = now;
         }
 
-        // while(!msg_fifo.IsEmpty()) {
-        //     auto msg = msg_fifo.PopFront();
-        //     Log::PrintLine(msg.Cstr());
-        // }
+        while(!msg_fifo.IsEmpty()) {
+            auto msg = msg_fifo.PopFront();
+            Log::PrintLine(msg.Cstr());
+        }
 
         /** Handle MIDI events */
         // while(hw.midi.HasEvents()) {

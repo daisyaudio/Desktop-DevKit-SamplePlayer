@@ -64,6 +64,8 @@ const char* PlayerResultToStr(SamplePlayer::PlayerResult& res) {
         case SamplePlayer::PlayerResult::NewSamplesRequested:
             return "NewSamplesRequested";
         case SamplePlayer::PlayerResult::DiskError: return "DiskError";
+        case SamplePlayer::PlayerResult::InitialLatency:
+            return "InitialLatency";
     }
     return "Unknown";
 }
@@ -82,7 +84,7 @@ struct SampleSequencer {
      *
      *  This opens all files for streaming, seeds the random playback direction, and initializes the internal clock and performance effects.
      */
-    void Init(float sample_rate) {
+    inline void Init(float sample_rate) {
         // Seed random (used for oplayback direction)
         // could replace with any of the cpp <random> generators.
         // We use the Daisy's TRNG peripheral as a seed to avoid
@@ -114,7 +116,10 @@ struct SampleSequencer {
             filter[chn].Init(sample_rate);
             filter[chn].SetCutoffParam(0.5f);
             decim[chn].Init();
+            decim[chn].SetDownsampleFactor(0.f);
+            decim[chn].SetBitcrushFactor(0.f);
             decim[chn].SetSmoothCrushing(true);
+            limiter[chn].Init();
         }
     }
 
@@ -173,7 +178,7 @@ struct SampleSequencer {
     }
 
     /** Increment the current step of the sequence according to the current playback direction. */
-    void Advance() {
+    inline void Advance() {
         switch(direction) {
             case PlaybackDirection::Forward:
                 step = (step + 1) % kMaxSequenceSteps;
@@ -210,6 +215,7 @@ struct SampleSequencer {
         }
         prev_play = play;
 
+        // Per-sample loop
         for(size_t i = 0; i < size; i++) {
             if(internal_clock.Process() && play) {
                 // Update sequence position
@@ -228,7 +234,13 @@ struct SampleSequencer {
                 float tout[2] = {0.f};
 
                 auto stream_res = v.Stream(tout, 2);
-                if(stream_res != SamplePlayer::PlayerResult::Ok) {
+
+                // Only update return value status for problematic statuses
+                if(stream_res != SamplePlayer::PlayerResult::Ok
+                   && stream_res
+                          != SamplePlayer::PlayerResult::NewSamplesRequested
+                   && stream_res
+                          != SamplePlayer::PlayerResult::InitialLatency) {
                     result = stream_res;
                 }
 
@@ -255,6 +267,8 @@ struct SampleSequencer {
             out[0][i]    = dist_l;
             out[1][i]    = dist_r;
         }
+        limiter[0].ProcessBlock(out[0], size, 0.8f);
+        limiter[1].ProcessBlock(out[1], size, 0.8f);
         return result;
     }
 
@@ -265,9 +279,9 @@ struct SampleSequencer {
     inline SamplePlayer::PlayerResult Prepare() {
         auto result = SamplePlayer::PlayerResult::Ok;
         for(auto& v : player.voice) {
-            auto _res = v.Prepare();
-            if(_res != SamplePlayer::PlayerResult::Ok) {
-                result = _res;
+            auto res = v.Prepare();
+            if(res != SamplePlayer::PlayerResult::Ok) {
+                result = res;
             }
         }
         return result;
@@ -279,19 +293,18 @@ struct SampleSequencer {
      *  Values between 0.51 and 1.0 act as a resonant high-pass
      *  Values within +/- 0.01 of 0.5 will result in the filter being disabled.
      */
-    void SetFilter(const float in) {
-        // TODO: set filt freqs and/crossfade values
+    inline void SetFilter(const float in) {
         filter[0].SetCutoffParam(in);
         filter[1].SetCutoffParam(in);
     }
 
     /** Adds gain/distortion to the final output of the signal chain */
-    void SetDistortionAmount(const float amt) {
+    inline void SetDistortionAmount(const float amt) {
         distortion[0].SetDrive(amt);
         distortion[1].SetDrive(amt);
     }
 
-    void SetBitcrushAmount(const float amt) {
+    inline void SetBitcrushAmount(const float amt) {
         auto factor = amt * 0.7f;
         auto crush  = amt * 0.3f;
         decim[0].SetDownsampleFactor(factor);
@@ -320,4 +333,5 @@ struct SampleSequencer {
     DistortionEffect   distortion[2];
     FilterEffect       filter[2];
     daisysp::Decimator decim[2];
+    daisysp::Limiter   limiter[2];
 };
