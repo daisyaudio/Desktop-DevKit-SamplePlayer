@@ -1,21 +1,7 @@
-/** Desktop DevKit UI Template
+/** Desktop DevKit Sample Player
  *
- *  UI template program for the Desktop DevKit
- *
- *  This program uses the libDaisy UI framework to generate events from the input
- *  that can be handled within UI pages.
- *  This is a bit more complex than the simpler approach to handling UI in other examples,
- *  but provides a lot of flexibility for more involved applications.
- *
- *  Since the Desktop DevKit is USB powered via the port on the devkit, this build uses the
- *  external variant of the bootloader so that the seed on the devkit can be reprogrammed
- *  while connected to the single USB port on the desktop devkit.
- *
- *  This program:
- *  - initializes the Desktop DevKit hardware
- *  - starts an audio callback to do pass through, update the controls, and generate UI events
- *  - starts a low-priority callback to process the UI events
- *  - prints input data from the `main_page.h` event hooks over USB serial
+ *  Demo program for the Desktop DevKit
+ *  8-voice xox-style sample playing sequencer.
  */
 #include "desktop_devkit.h"
 #include "userinterface.h"
@@ -200,25 +186,6 @@ int main(void) {
             auto msg = msg_fifo.PopFront();
             Log::PrintLine(msg.Cstr());
         }
-
-        /** Handle MIDI events */
-        // while(hw.midi.HasEvents()) {
-        //     auto msg = hw.midi.PopEvent();
-        //     switch(msg.type) {
-        //         case NoteOn:
-        //             // Echo note on messages to the MIDI out
-        //             {
-        //                 uint8_t bytes[3] = {0x90, 0x00, 0x00};
-        //                 bytes[1]         = msg.data[0];
-        //                 bytes[2]         = msg.data[1];
-        //                 hw.midi.SendMessage(bytes, 3);
-        //             }
-        //             break;
-        //         default: break;
-        //     }
-        // }
-
-        // System::Delay(1);
     }
 
     return 0;
